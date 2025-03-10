@@ -73,29 +73,8 @@ The script will generate the following plots:
 
 ### Example Output
 
-After running the script, you should see output similar to the following:
-
-```
-Training base model...
-Epoch 1, Loss: 0.1234, Learning Rate: 0.000100, Val Accuracy: 98.50%
-...
-Early stopping at epoch 25
-Total Training Time: 5.23 min
-Max memory allocated: 512.34 MB
--------------------------------------
-Training LoRA model...
-Epoch 1, Loss: 0.1234, Learning Rate: 0.000100, Val Accuracy: 98.50%
-...
-Early stopping at epoch 25
-Total Training Time: 5.23 min
-Max memory allocated: 512.34 MB
--------------------------------------
-...
-Base Model Test Accuracy: 98.50%
-LoRA Model Test Accuracy: 98.60%
-DoRA Model Test Accuracy: 98.70%
-QLoRA Model Test Accuracy: 98.55%
-```
+![Loss](loss.png)  
+![Acc](acc.png)  
 
 ## Contributing
 
