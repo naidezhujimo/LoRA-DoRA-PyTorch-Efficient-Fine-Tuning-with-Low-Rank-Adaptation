@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch
 import copy
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 
 if torch.cuda.is_available():
     torch.backends.cudnn.deterministic = True
@@ -80,9 +81,13 @@ def train(num_epochs, model, optimizer, train_loader, device=device):
     accuracies = []
     max_memory_allocated = 0 # 最大内存占用
 
-    for epoch in range(num_epochs):
+    # 使用 tqdm 包装 epoch 循环
+    epoch_progress = tqdm(range(num_epochs), desc="Training", unit='epoch', leave=True)
+    for epoch in epoch_progress:
         model.train()
-        for batch_idx, (features, targets) in enumerate(train_loader):
+        # 使用 tqdm 包装 batch 循环
+        batch_progress = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{num_epochs}", leave=False)
+        for batch_idx, (features, targets) in enumerate(batch_progress):
             features = features.to(device)
             targets = targets.to(device)
 
@@ -91,6 +96,9 @@ def train(num_epochs, model, optimizer, train_loader, device=device):
             optimizer.zero_grad() 
             loss.backward()
             optimizer.step()
+
+            # 更新 batch 进度条描述
+            batch_progress.set_postfix(loss=loss.item())
 
         scheduler.step()
 
@@ -109,11 +117,13 @@ def train(num_epochs, model, optimizer, train_loader, device=device):
                 break
 
         current_lr = optimizer.param_groups[0]['lr']
-        print(f'Epoch {epoch + 1}, Loss: {loss.item():.4f}, Learning Rate: {current_lr:.6f}, Val Accuracy: {val_accuracy:.2f}%')
+        # 更新 epoch 进度条描述
+        epoch_progress.set_postfix(loss=loss.item(), lr=current_lr, val_accuracy=f'{val_accuracy:.2f}%')
         losses.append(loss.item())
 
     print('Total Training Time: %.2f min' % ((time.time() - start_time) / 60))
     print(f'Max memory allocated: {torch.cuda.max_memory_allocated(device=device) / 1024 ** 2:.2f} MB')
+    # 记录显存占用最大值
     max_memory_allocated = max(max_memory_allocated, torch.cuda.max_memory_allocated(device=device))
 
     return losses, accuracies, max_memory_allocated
@@ -333,7 +343,6 @@ print(f'QLoRA Model Test Accuracy: {qlora_accuracy:.2f}%')
 methods = ['Base Model', 'LoRA', 'DoRA', 'QLoRA']
 accuracies = [base_accuracy, lora_accuracy, dora_accuracy, qlora_accuracy]
 memory_usage = [base_memory / 1024 ** 2, lora_memory / 1024 ** 2, dora_memory / 1024 ** 2, qlora_memory / 1024 ** 2]  # 转换为 MB
-
 
 # 绘制柱状图
 plt.figure(figsize=(12, 6))
