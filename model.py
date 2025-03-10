@@ -62,7 +62,7 @@ def compute_accuracy(model, data_loader, device=device):
             _, predicted_labels = torch.max(logits, 1)
             num_examples += targets.size(0)
             correct_pred += (predicted_labels == targets).sum()
-        return correct_pred.float() / num_examples * 100
+        return (correct_pred.float() / num_examples * 100).item()  # 返回标量值
 
 
 # 训练函数
@@ -70,15 +70,16 @@ def train(num_epochs, model, optimizer, train_loader, device=device):
     start_time = time.time()
     # 定义余弦退火调度器
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=num_epochs // 2, eta_min=1e-6  # T_max 设置为总 epoch 数，eta_min 设置为最小学习率
+        optimizer, T_max=num_epochs // 2, eta_min=1e-6
     )
 
-    best_accuracy = 0
-    patience = 5  # 允许性能不提升的 epoch 数
+    best_accuracy = 0 # 最佳准确率
+    patience = 5 # 允许下一个最优的阈值
     counter = 0
     losses = []
     accuracies = []
-    max_memory_allocated = 0  # 记录最大显存消耗
+    max_memory_allocated = 0 # 最大内存占用
+
     for epoch in range(num_epochs):
         model.train()
         for batch_idx, (features, targets) in enumerate(train_loader):
@@ -86,16 +87,17 @@ def train(num_epochs, model, optimizer, train_loader, device=device):
             targets = targets.to(device)
 
             logits = model(features)
-            loss = F.cross_entropy(logits, targets)  # 计算交叉熵损失
+            loss = F.cross_entropy(logits, targets)
             optimizer.zero_grad() 
-            loss.backward()  # 更新梯度
+            loss.backward()
             optimizer.step()
-        
-        # 每个 epoch 结束后更新学习率
+
         scheduler.step()
-        
-        # 在验证集上测试性能(早停法)
+
+        # 计算验证集准确率
         val_accuracy = compute_accuracy(model, test_loader)
+        accuracies.append(val_accuracy)  # 将准确率追加到列表中
+
         # 早停法逻辑
         if val_accuracy > best_accuracy:
             best_accuracy = val_accuracy
@@ -106,17 +108,14 @@ def train(num_epochs, model, optimizer, train_loader, device=device):
                 print(f'Early stopping at epoch {epoch + 1}')
                 break
 
-        # 打印当前 epoch 的 loss 和学习率
         current_lr = optimizer.param_groups[0]['lr']
         print(f'Epoch {epoch + 1}, Loss: {loss.item():.4f}, Learning Rate: {current_lr:.6f}, Val Accuracy: {val_accuracy:.2f}%')
         losses.append(loss.item())
-        accuracies.append(compute_accuracy(model, test_loader))
+
     print('Total Training Time: %.2f min' % ((time.time() - start_time) / 60))
-    # 打印显存占用
     print(f'Max memory allocated: {torch.cuda.max_memory_allocated(device=device) / 1024 ** 2:.2f} MB')
-    # 记录最大显存消耗
     max_memory_allocated = max(max_memory_allocated, torch.cuda.max_memory_allocated(device=device))
-        
+
     return losses, accuracies, max_memory_allocated
 #---------------------------------------------------------------------------
 # 定义 CNN 模型
@@ -195,23 +194,22 @@ class QLoRALayer(nn.Module):
         self.bits = bits
         self.rank = rank
         self.alpha = alpha
-        self.A = nn.Parameter(torch.randn(in_dim, rank))
-        self.B = nn.Parameter(torch.zeros(rank, out_dim))
+        self.A = nn.Parameter(torch.randn(in_dim, rank) * (1 / torch.sqrt(torch.tensor(rank).float())))
+        self.B = nn.Parameter(torch.randn(rank, out_dim) * (1 / torch.sqrt(torch.tensor(rank).float())))
         self.scale = nn.Parameter(torch.ones(1))
         self.zero_point = nn.Parameter(torch.zeros(1))
 
     def quantize(self, x):
-        # 量化操作
         q_min = -2 ** (self.bits - 1)
         q_max = 2 ** (self.bits - 1) - 1
-        scale = (x.max() - x.min()) / (q_max - q_min)
-        zero_point = q_min - x.min() / scale
-        x_quantized = torch.round(x / scale + zero_point)
+        epsilon = 1e-8  # 避免除零错误
+        scale = (x.max() - x.min() + epsilon) / (q_max - q_min)
+        zero_point = q_min - x.min() / (scale + epsilon)
+        x_quantized = torch.round(x / (scale + epsilon) + zero_point)
         x_quantized = torch.clamp(x_quantized, q_min, q_max)
         return x_quantized, scale, zero_point
 
     def dequantize(self, x_quantized, scale, zero_point):
-        # 反量化操作
         return (x_quantized - zero_point) * scale
 
     def forward(self, x):
@@ -238,7 +236,7 @@ random_seed = 620
 learning_rate = 1e-4
 rank = 64
 alpha = 8
-num_epochs = 50
+num_epochs = 40
 
 #---------------------------------------------------------------------------
 
@@ -317,26 +315,6 @@ plt.ylabel('Accuracy (%)')
 plt.title('Validation Accuracy Comparison')
 plt.legend()
 
-# 绘制 Base Model 的损失值和准确率
-plt.subplot(2, 2, 3)
-plt.plot(base_losses, label='Loss', color='blue')
-plt.plot(base_accuracies, label='Accuracy', color='orange')
-plt.xlabel('Epoch')
-plt.ylabel('Value')
-plt.title('Base Model: Loss and Accuracy')
-plt.legend()
-
-# 绘制 LoRA 的损失值和准确率
-plt.subplot(2, 2, 4)
-plt.plot(lora_losses, label='Loss', color='blue')
-plt.plot(lora_accuracies, label='Accuracy', color='orange')
-plt.xlabel('Epoch')
-plt.ylabel('Value')
-plt.title('LoRA: Loss and Accuracy')
-plt.legend()
-
-plt.tight_layout()
-plt.show()
 
 
 # 在训练完成后收集准确率
@@ -356,25 +334,31 @@ methods = ['Base Model', 'LoRA', 'DoRA', 'QLoRA']
 accuracies = [base_accuracy, lora_accuracy, dora_accuracy, qlora_accuracy]
 memory_usage = [base_memory / 1024 ** 2, lora_memory / 1024 ** 2, dora_memory / 1024 ** 2, qlora_memory / 1024 ** 2]  # 转换为 MB
 
+
 # 绘制柱状图
 plt.figure(figsize=(12, 6))
 x = np.arange(len(methods))
 width = 0.35
 
 # 绘制准确率柱状图
-plt.bar(x - width/2, accuracies, width, label='Accuracy (%)', color='blue')
+plt.bar(x - width/2, accuracies, width, label='Accuracy (%)', color='#1f77b4')  # 使用更柔和的蓝色
 # 绘制显存消耗柱状图
-plt.bar(x + width/2, memory_usage, width, label='Memory Usage (MB)', color='orange')
+plt.bar(x + width/2, memory_usage, width, label='Memory Usage (MB)', color='#ff7f0e')  # 使用更柔和的橙色
 
-plt.xlabel('Method')
-plt.ylabel('Value')
-plt.title('Comparison of Test Accuracy and Memory Usage for Different Methods')
-plt.xticks(x, methods)
-plt.legend()
+plt.xlabel('Method', fontsize=12, fontfamily='sans-serif')  # 设置字体大小和类型
+plt.ylabel('Value', fontsize=12, fontfamily='sans-serif')
+plt.title('Comparison of Test Accuracy and Memory Usage for Different Methods', fontsize=14, fontfamily='sans-serif')
+
+plt.xticks(x, methods, fontsize=10, fontfamily='sans-serif')  # 设置x轴标签的字体大小和类型
+plt.legend(loc='upper center', bbox_to_anchor=(0.5, -0.1), ncol=2)  # 将图例放置在图表下方
 
 # 在柱子上方显示数值
 for i, (acc, mem) in enumerate(zip(accuracies, memory_usage)):
-    plt.text(i - width/2, acc + 1, f'{acc:.2f}%', ha='center', va='bottom')
-    plt.text(i + width/2, mem + 1, f'{mem:.2f} MB', ha='center', va='bottom')
+    plt.text(i - width/2, acc + 0.5, f'{acc:.2f}%', ha='center', va='bottom', fontsize=10, fontfamily='sans-serif')
+    plt.text(i + width/2, mem + 0.5, f'{mem:.2f} MB', ha='center', va='bottom', fontsize=10, fontfamily='sans-serif')
 
+plt.grid(True, linestyle='--', alpha=0.7)  # 添加网格线，设置样式和透明度
+plt.tight_layout()  # 自动调整子图参数，使之填充整个图像区域
+
+plt.savefig("acc.png", dpi=300)  # 保存图像，设置分辨率
 plt.show()
