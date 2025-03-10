@@ -15,7 +15,7 @@ if torch.cuda.is_available():
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # 划分数据集
-BATCH_SIZE = 64
+BATCH_SIZE = 96
 # 加载 MNIST 数据集
 train_dataset = datasets.MNIST(root='data', 
                                train=True, 
@@ -74,10 +74,11 @@ def train(num_epochs, model, optimizer, train_loader, device=device):
     )
 
     best_accuracy = 0
-    patience = 3  # 允许性能不提升的 epoch 数
+    patience = 5  # 允许性能不提升的 epoch 数
     counter = 0
     losses = []
     accuracies = []
+    max_memory_allocated = 0  # 记录最大显存消耗
     for epoch in range(num_epochs):
         model.train()
         for batch_idx, (features, targets) in enumerate(train_loader):
@@ -113,21 +114,10 @@ def train(num_epochs, model, optimizer, train_loader, device=device):
     print('Total Training Time: %.2f min' % ((time.time() - start_time) / 60))
     # 打印显存占用
     print(f'Max memory allocated: {torch.cuda.max_memory_allocated(device=device) / 1024 ** 2:.2f} MB')
-    # 绘制 Loss 和准确率曲线
-    plt.figure(figsize=(12, 5))
-    plt.subplot(1, 2, 1)
-    plt.plot(losses, label='Loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.legend()
-
-    plt.subplot(1, 2, 2)
-    accuracies = [acc.cpu().numpy() for acc in accuracies]
-    plt.plot(accuracies, label='Accuracy')
-    plt.xlabel('Epoch')
-    plt.ylabel('Accuracy')
-    plt.legend()
-    plt.show()
+    # 记录最大显存消耗
+    max_memory_allocated = max(max_memory_allocated, torch.cuda.max_memory_allocated(device=device))
+        
+    return losses, accuracies, max_memory_allocated
 #---------------------------------------------------------------------------
 # 定义 CNN 模型
 class CNN(nn.Module):
@@ -156,7 +146,7 @@ class CNN(nn.Module):
         x = self.fc_layers(x)
         return x
 
-# LoRA 和 DoRA 的实现保持不变
+# LoRA层实现
 class LoRALayer(nn.Module):
     def __init__(self, in_dim, out_dim, rank, alpha):
         super().__init__()
@@ -180,6 +170,7 @@ class LinearWithLoRA(nn.Module):
     def forward(self, x):
         return self.linear(x) + self.lora(x)
 
+# DoRA层实现
 class LinearWithDoRA(nn.Module):
     def __init__(self, linear, rank, alpha):
         super().__init__()
@@ -197,13 +188,57 @@ class LinearWithDoRA(nn.Module):
         new_weight = self.m * directional_component
         return F.linear(x, new_weight, self.linear.bias)
 
+# QLoRA层实现
+class QLoRALayer(nn.Module):
+    def __init__(self, in_dim, out_dim, rank, alpha, bits=4):
+        super().__init__()
+        self.bits = bits
+        self.rank = rank
+        self.alpha = alpha
+        self.A = nn.Parameter(torch.randn(in_dim, rank))
+        self.B = nn.Parameter(torch.zeros(rank, out_dim))
+        self.scale = nn.Parameter(torch.ones(1))
+        self.zero_point = nn.Parameter(torch.zeros(1))
+
+    def quantize(self, x):
+        # 量化操作
+        q_min = -2 ** (self.bits - 1)
+        q_max = 2 ** (self.bits - 1) - 1
+        scale = (x.max() - x.min()) / (q_max - q_min)
+        zero_point = q_min - x.min() / scale
+        x_quantized = torch.round(x / scale + zero_point)
+        x_quantized = torch.clamp(x_quantized, q_min, q_max)
+        return x_quantized, scale, zero_point
+
+    def dequantize(self, x_quantized, scale, zero_point):
+        # 反量化操作
+        return (x_quantized - zero_point) * scale
+
+    def forward(self, x):
+        A_quantized, A_scale, A_zero_point = self.quantize(self.A)
+        B_quantized, B_scale, B_zero_point = self.quantize(self.B)
+        A_dequantized = self.dequantize(A_quantized, A_scale, A_zero_point)
+        B_dequantized = self.dequantize(B_quantized, B_scale, B_zero_point)
+        return self.alpha * (x @ A_dequantized @ B_dequantized)
+
+class LinearWithQLoRA(nn.Module):
+    def __init__(self, linear, rank, alpha, bits=4):
+        super().__init__()
+        self.linear = linear
+        self.qlora = QLoRALayer(
+            linear.in_features, linear.out_features, rank, alpha, bits
+        )
+
+    def forward(self, x):
+        return self.linear(x) + self.qlora(x)
+
 #---------------------------------------------------------------------------
 # 超参数
 random_seed = 620
 learning_rate = 1e-4
 rank = 64
 alpha = 8
-num_epochs = 20
+num_epochs = 50
 
 #---------------------------------------------------------------------------
 
@@ -213,6 +248,7 @@ optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay
 
 model_lora = copy.deepcopy(model)
 model_dora = copy.deepcopy(model)
+model_qlora = copy.deepcopy(model)
 
 # 将全连接层替换为 LoRA 层
 model_lora.fc_layers[0] = LinearWithLoRA(model_lora.fc_layers[0], rank=rank, alpha=alpha)
@@ -228,20 +264,117 @@ freeze_linear_layers(model_dora)
 model_dora.to(device)
 optimizer_dora = torch.optim.AdamW(model_dora.parameters(), lr=learning_rate, weight_decay=1e-4)
 
+# 将全连接层替换为 QLoRA 层
+model_qlora.fc_layers[0] = LinearWithQLoRA(model_qlora.fc_layers[0], rank=rank, alpha=alpha, bits=4)
+model_qlora.fc_layers[2] = LinearWithQLoRA(model_qlora.fc_layers[2], rank=rank, alpha=alpha, bits=4)
+freeze_linear_layers(model_qlora)
+model_qlora.to(device)
+optimizer_qlora = torch.optim.AdamW(model_qlora.parameters(), lr=learning_rate, weight_decay=1e-4)
+
+
 # 不使用任何微调方法
 print("Training base model...")
-train(num_epochs, model, optimizer, train_loader)
-print(f'Test accuracy: {compute_accuracy(model, test_loader):.2f}%')
+base_losses, base_accuracies, base_memory = train(num_epochs, model, optimizer, train_loader)
 print('-------------------------------------')
 
 # 使用 LoRA 方法
 print("Training LoRA model...")
-train(num_epochs, model_lora, optimizer_lora, train_loader)
-print(f'Test accuracy LoRA finetune: {compute_accuracy(model_lora, test_loader):.2f}%')
+lora_losses, lora_accuracies, lora_memory = train(num_epochs, model_lora, optimizer_lora, train_loader)
 print('-------------------------------------')
 
 # 使用 DoRA 方法
 print("Training DoRA model...")
-train(num_epochs, model_dora, optimizer_dora, train_loader)
-print(f'Test accuracy DoRA finetune: {compute_accuracy(model_dora, test_loader):.2f}%')
+dora_losses, dora_accuracies, dora_memory = train(num_epochs, model_dora, optimizer_dora, train_loader)
 print('-------------------------------------')
+
+# 使用 QLoRA 方法
+print("Training QLoRA model...")
+qlora_losses, qlora_accuracies, qlora_memory = train(num_epochs, model_qlora, optimizer_qlora, train_loader)
+print('-------------------------------------')
+
+
+
+plt.figure(figsize=(14, 10))
+# 绘制损失值图像
+plt.subplot(2, 2, 1)
+plt.plot(base_losses, label='Base Model', color='blue')
+plt.plot(lora_losses, label='LoRA', color='orange')
+plt.plot(dora_losses, label='DoRA', color='green')
+plt.plot(qlora_losses, label='QLoRA', color='red')
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.title('Training Loss Comparison')
+plt.legend()
+
+# 绘制准确率图像
+plt.subplot(2, 2, 2)
+plt.plot(base_accuracies, label='Base Model', color='blue')
+plt.plot(lora_accuracies, label='LoRA', color='orange')
+plt.plot(dora_accuracies, label='DoRA', color='green')
+plt.plot(qlora_accuracies, label='QLoRA', color='red')
+plt.xlabel('Epoch')
+plt.ylabel('Accuracy (%)')
+plt.title('Validation Accuracy Comparison')
+plt.legend()
+
+# 绘制 Base Model 的损失值和准确率
+plt.subplot(2, 2, 3)
+plt.plot(base_losses, label='Loss', color='blue')
+plt.plot(base_accuracies, label='Accuracy', color='orange')
+plt.xlabel('Epoch')
+plt.ylabel('Value')
+plt.title('Base Model: Loss and Accuracy')
+plt.legend()
+
+# 绘制 LoRA 的损失值和准确率
+plt.subplot(2, 2, 4)
+plt.plot(lora_losses, label='Loss', color='blue')
+plt.plot(lora_accuracies, label='Accuracy', color='orange')
+plt.xlabel('Epoch')
+plt.ylabel('Value')
+plt.title('LoRA: Loss and Accuracy')
+plt.legend()
+
+plt.tight_layout()
+plt.show()
+
+
+# 在训练完成后收集准确率
+base_accuracy = compute_accuracy(model, test_loader)
+lora_accuracy = compute_accuracy(model_lora, test_loader)
+dora_accuracy = compute_accuracy(model_dora, test_loader)
+qlora_accuracy = compute_accuracy(model_qlora, test_loader)
+
+# 打印最终准确率
+print(f'Base Model Test Accuracy: {base_accuracy:.2f}%')
+print(f'LoRA Model Test Accuracy: {lora_accuracy:.2f}%')
+print(f'DoRA Model Test Accuracy: {dora_accuracy:.2f}%')
+print(f'QLoRA Model Test Accuracy: {qlora_accuracy:.2f}%')
+
+# 收集准确率和显存消耗
+methods = ['Base Model', 'LoRA', 'DoRA', 'QLoRA']
+accuracies = [base_accuracy, lora_accuracy, dora_accuracy, qlora_accuracy]
+memory_usage = [base_memory / 1024 ** 2, lora_memory / 1024 ** 2, dora_memory / 1024 ** 2, qlora_memory / 1024 ** 2]  # 转换为 MB
+
+# 绘制柱状图
+plt.figure(figsize=(12, 6))
+x = np.arange(len(methods))
+width = 0.35
+
+# 绘制准确率柱状图
+plt.bar(x - width/2, accuracies, width, label='Accuracy (%)', color='blue')
+# 绘制显存消耗柱状图
+plt.bar(x + width/2, memory_usage, width, label='Memory Usage (MB)', color='orange')
+
+plt.xlabel('Method')
+plt.ylabel('Value')
+plt.title('Comparison of Test Accuracy and Memory Usage for Different Methods')
+plt.xticks(x, methods)
+plt.legend()
+
+# 在柱子上方显示数值
+for i, (acc, mem) in enumerate(zip(accuracies, memory_usage)):
+    plt.text(i - width/2, acc + 1, f'{acc:.2f}%', ha='center', va='bottom')
+    plt.text(i + width/2, mem + 1, f'{mem:.2f} MB', ha='center', va='bottom')
+
+plt.show()
