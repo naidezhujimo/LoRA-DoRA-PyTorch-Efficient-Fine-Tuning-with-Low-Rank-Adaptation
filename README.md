@@ -73,7 +73,7 @@ The script will generate the following plots:
 
 ### Example Output
 
-![Loss](loss.png)  
+![Loss](loss.png)
 ![Acc](acc.png)  
 
 ## Contributing
