@@ -1,6 +1,6 @@
 # MNIST Classification with LoRA, DoRA, and QLoRA
 
-This repository contains a PyTorch implementation of a Convolutional Neural Network (CNN) for classifying the MNIST dataset. The project explores different fine-tuning methods, including LoRA (Low-Rank Adaptation), DoRA (Directional Low-Rank Adaptation), and QLoRA (Quantized Low-Rank Adaptation), to improve model performance and efficiency.
+This repository contains a PyTorch implementation of a Convolutional Neural Network (CNN) for classifying the MNIST dataset. The project explores different fine-tuning techniques, including LoRA (Low-Rank Adaptation), DoRA (Dynamic Low-Rank Adaptation), and QLoRA (Quantized Low-Rank Adaptation), to improve model performance and efficiency.
 
 ## Table of Contents
 
@@ -13,73 +13,91 @@ This repository contains a PyTorch implementation of a Convolutional Neural Netw
 
 ## Introduction
 
-The goal of this project is to compare the effectiveness of different fine-tuning methods on a CNN model trained on the MNIST dataset. The methods include:
+The goal of this project is to compare the performance of different fine-tuning methods on the MNIST dataset. The base model is a simple CNN, and we apply LoRA, DoRA, and QLoRA techniques to fine-tune the model. The results are compared in terms of accuracy and memory usage.
+
+### Techniques
 
 - **LoRA (Low-Rank Adaptation)**: A technique that introduces low-rank matrices to adapt the model's weights, reducing the number of trainable parameters.
-- **DoRA (Directional Low-Rank Adaptation)**: An extension of LoRA that incorporates directional components to further enhance model adaptation.
-- **QLoRA (Quantized Low-Rank Adaptation)**: A quantized version of LoRA that reduces the precision of the model's weights to save memory and computational resources.
+- **DoRA (Dynamic Low-Rank Adaptation)**: An extension of LoRA that dynamically adjusts the rank of the adaptation matrices.
+- **QLoRA (Quantized Low-Rank Adaptation)**: A quantized version of LoRA that reduces the precision of the weights to save memory and computational resources.
 
 ## Installation
 
-To run this project, you need to have Python 3.x installed along with the following libraries:
+To run this project, you need to have Python 3.7 or later installed. Follow these steps to set up the environment:
 
-- `torch`
-- `torchvision`
-- `numpy`
-- `matplotlib`
-
-You can install the required libraries using `pip`:
-
-```bash
-pip install torch torchvision numpy matplotlib
-```
-
-## Usage
-
-1. **Clone the repository**:
-
+1. Clone the repository:
    ```bash
    git clone https://github.com/your-username/mnist-lora-dora-qlora.git
    cd mnist-lora-dora-qlora
    ```
 
-2. **Run the training script**:
-
-   The main script `train.py` will train the CNN model using the different fine-tuning methods and compare their performance.
-
+2. Install the required dependencies:
    ```bash
-   python train.py
+   pip install -r requirements.txt
    ```
 
-3. **View the results**:
+## Usage
 
-   The script will output the test accuracy and memory usage for each method. Additionally, it will generate plots showing the training loss, accuracy, and a comparison of the different methods.
+To train the models and generate the results, run the following command:
+
+```bash
+python main.py
+```
+
+This script will:
+
+1. Load the MNIST dataset.
+2. Train the base CNN model.
+3. Apply LoRA, DoRA, and QLoRA techniques and train the respective models.
+4. Generate plots comparing the training loss, validation accuracy, and memory usage of the different methods.
+
+### Hyperparameters
+
+You can adjust the hyperparameters in the script to experiment with different settings:
+
+- `BATCH_SIZE`: Batch size for training and testing.
+- `learning_rate`: Learning rate for the optimizer.
+- `rank`: Rank of the low-rank matrices in LoRA, DoRA, and QLoRA.
+- `alpha`: Scaling factor for the low-rank adaptation.
+- `num_epochs`: Number of training epochs.
 
 ## Results
 
-The project compares the following methods:
+The script will generate the following plots:
 
-- **Base Model**: The standard CNN model without any fine-tuning.
-- **LoRA**: The CNN model fine-tuned using LoRA.
-- **DoRA**: The CNN model fine-tuned using DoRA.
-- **QLoRA**: The CNN model fine-tuned using QLoRA.
+1. **Training Loss Comparison**: Compares the training loss of the base model, LoRA, DoRA, and QLoRA.
+2. **Validation Accuracy Comparison**: Compares the validation accuracy of the base model, LoRA, DoRA, and QLoRA.
+3. **Base Model: Loss and Accuracy**: Shows the training loss and validation accuracy for the base model.
+4. **LoRA: Loss and Accuracy**: Shows the training loss and validation accuracy for the LoRA model.
+5. **Comparison of Test Accuracy and Memory Usage**: A bar chart comparing the final test accuracy and memory usage of all methods.
 
-### Accuracy and Memory Usage
+### Example Output
 
-The following table summarizes the test accuracy and memory usage for each method:
+After running the script, you should see output similar to the following:
 
-| Method      | Test Accuracy | Memory Usage (MB) |
-|-------------|---------------|-------------------|
-| Base Model  | 99.20%        | 123.45 MB         |
-| LoRA        | 99.30%        | 98.76 MB          |
-| DoRA        | 99.35%        | 101.23 MB         |
-| QLoRA       | 99.25%        | 89.12 MB          |
-
-### Plots
-
-- **Training Loss and Accuracy**: Plots showing the training loss and accuracy over epochs for each method.
-- **Comparison of Methods**: A bar chart comparing the test accuracy and memory usage of the different methods.
+```
+Training base model...
+Epoch 1, Loss: 0.1234, Learning Rate: 0.000100, Val Accuracy: 98.50%
+...
+Early stopping at epoch 25
+Total Training Time: 5.23 min
+Max memory allocated: 512.34 MB
+-------------------------------------
+Training LoRA model...
+Epoch 1, Loss: 0.1234, Learning Rate: 0.000100, Val Accuracy: 98.50%
+...
+Early stopping at epoch 25
+Total Training Time: 5.23 min
+Max memory allocated: 512.34 MB
+-------------------------------------
+...
+Base Model Test Accuracy: 98.50%
+LoRA Model Test Accuracy: 98.60%
+DoRA Model Test Accuracy: 98.70%
+QLoRA Model Test Accuracy: 98.55%
+```
 
 ## Contributing
 
-Contributions are welcome! If you have any suggestions, improvements, or bug fixes, please open an issue or submit a pull request.
+Contributions are welcome! If you have any suggestions, bug reports, or feature requests, please open an issue or submit a pull request.
+
